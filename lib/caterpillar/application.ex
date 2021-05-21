@@ -10,6 +10,7 @@ defmodule Caterpillar.Application do
     children = [
       # Starts a worker by calling: Caterpillar.Worker.start_link(arg)
       # {Caterpillar.Worker, arg}
+      {Finch, name: DefaultFinch}
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

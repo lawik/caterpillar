@@ -2,7 +2,8 @@ defmodule CaterpillarTest do
   use ExUnit.Case
   doctest Caterpillar
 
-  test "greets the world" do
-    assert Caterpillar.hello() == :world
+  test "crawl" do
+    Caterpillar.crawl_url("https://underjord.io")
+    assert true
   end
 end
