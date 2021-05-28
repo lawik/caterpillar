@@ -4,7 +4,6 @@ defmodule Caterpillar do
   @lock_table :url_locks
   @body_table :url_body
 
-  # TODO: Add finches per domain
   # TODO: Add check for robots.txt and respect it
 
   # TODO: Set up more serious orchestration of fetching URL contents vs parsing links vs rechecking
@@ -37,6 +36,41 @@ defmodule Caterpillar do
           :ok
       end
     end
+  end
+
+  def get_url_or_empty(url) do
+    :get
+    |> Finch.build(url)
+    |> Finch.request(DefaultFinch)
+    |> case do
+      {:ok, %{status: 200, body: body, headers: headers}} ->
+        content_type =
+          headers
+          |> Map.new()
+          |> Map.get("content-type", nil)
+
+          save_url(url, body)
+          :ok
+        end
+
+      {:ok, %{status: status, headers: headers}} when status in [301, 302] ->
+        location =
+          headers
+          |> Map.new()
+          |> Map.get("location", nil)
+
+        get_url(location)
+
+      {:ok, %{status: 404}} ->
+        content_type = "text/plain"
+        save_url(url, "")
+        :ok
+
+      error ->
+        Logger.error("URL failed: #{url}")
+        raise "failed #{inspect(error)}"
+    end
+
   end
 
   def get_url(url) do
@@ -92,6 +126,12 @@ defmodule Caterpillar do
       [] ->
         []
     end
+  end
+
+  def robot_allowed?(url) do
+    %{host: host, scheme: scheme} = URI.parse(url)
+    scheme = scheme || "https://"
+    robot_url = "#{scheme}://#{host}/robots.txt"
   end
 
   def to_absolute(nil, _), do: nil
