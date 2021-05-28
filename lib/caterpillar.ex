@@ -1,11 +1,11 @@
 defmodule Caterpillar do
-  @dir "files"
-
   require Logger
 
-  # TODO: Add check for robots.txt and respect it
+  @lock_table :url_locks
+  @body_table :url_body
+
   # TODO: Add finches per domain
-  # TODO: Improve prevention of duplicate crawls? Not super important
+  # TODO: Add check for robots.txt and respect it
 
   # TODO: Set up more serious orchestration of fetching URL contents vs parsing links vs rechecking
   # TODO: Save data on linking and relationships (build the graphy thing)
@@ -15,25 +15,30 @@ defmodule Caterpillar do
   # TODO: Unleash on web when it can behave
 
   def crawl_url(url) do
-    case get_url(url) do
-      :ok ->
-        url
-        |> parse_links()
-        |> Enum.each(fn link_url ->
-          Task.start(fn ->
-            if should_crawl?(link_url) do
-              Logger.info("URL: #{url}")
-              crawl_url(link_url)
-            end
-          end)
-        end)
+    ensure_tables()
 
-      :skip ->
-        :ok
+    if should_crawl?(url) and acquire_lock?(url) do
+      Logger.info("URL: #{url}")
+
+      case get_url(url) do
+        :ok ->
+          clear_lock(url)
+
+          url
+          |> parse_links()
+          |> Enum.each(fn link_url ->
+            Task.start_link(fn ->
+              crawl_url(link_url)
+            end)
+          end)
+
+        :skip ->
+          clear_lock(url)
+          :ok
+      end
     end
   end
 
-  @spec get_url(binary | URI.t()) :: :ok | :skip
   def get_url(url) do
     :get
     |> Finch.build(url)
@@ -52,29 +57,41 @@ defmodule Caterpillar do
           :skip
         end
 
+      {:ok, %{status: status, headers: headers}} when status in [301, 302] ->
+        location =
+          headers
+          |> Map.new()
+          |> Map.get("location", nil)
+
+        get_url(location)
+
       error ->
+        Logger.error("URL failed: #{url}")
         raise "failed #{inspect(error)}"
     end
   end
 
   def save_url(url, body) do
-    File.mkdir_p!(@dir)
-    File.write!(get_url_filepath(url), body)
+    :ets.insert(@body_table, {url, body})
   end
 
   def parse_links(url) do
-    url
-    |> get_url_filepath()
-    |> File.read!()
-    |> Floki.parse_document!()
-    |> Floki.find("a")
-    |> Enum.map(fn {_elem, attributes, _} ->
-      attributes
-      |> Map.new()
-      |> Map.get("href", nil)
-      |> to_absolute(url)
-    end)
-    |> Enum.reject(&is_nil/1)
+    case :ets.lookup(@body_table, url) do
+      [{_, body}] ->
+        body
+        |> Floki.parse_document!()
+        |> Floki.find("a")
+        |> Enum.map(fn {_elem, attributes, _} ->
+          attributes
+          |> Map.new()
+          |> Map.get("href", nil)
+          |> to_absolute(url)
+        end)
+        |> Enum.reject(&is_nil/1)
+
+      [] ->
+        []
+    end
   end
 
   def to_absolute(nil, _), do: nil
@@ -83,6 +100,8 @@ defmodule Caterpillar do
     original_url
     |> URI.merge(href)
     |> URI.to_string()
+    |> String.split("#")
+    |> hd()
     |> case do
       "http://" <> _ = url -> url
       "https://" <> _ = url -> url
@@ -90,17 +109,34 @@ defmodule Caterpillar do
     end
   end
 
-  def get_url_filepath(url) do
-    hash = url_to_hash(url)
-    Path.join(@dir, hash)
-  end
-
   def url_to_hash(url) do
     :crypto.hash(:sha256, url) |> Base.encode16() |> String.downcase()
   end
 
   def should_crawl?(url) do
-    filepath = get_url_filepath(url)
-    not File.exists?(filepath) and String.contains?(url, "underjord.io")
+    case :ets.lookup(@body_table, url) do
+      [_] -> false
+      [] -> String.contains?(url, "underjord.io")
+    end
+  end
+
+  defp ensure_tables do
+    case :ets.whereis(@lock_table) do
+      :undefined -> :ets.new(@lock_table, [:named_table, :public, :set])
+      table_ref -> table_ref
+    end
+
+    case :ets.whereis(@body_table) do
+      :undefined -> :ets.new(@body_table, [:named_table, :public, :set])
+      table_ref -> table_ref
+    end
+  end
+
+  def acquire_lock?(url) do
+    :ets.insert_new(@lock_table, {url, self()})
+  end
+
+  def clear_lock(url) do
+    :ets.delete(@lock_table, url)
   end
 end
